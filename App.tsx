@@ -4,7 +4,9 @@ import PlayerUI from './components/PlayerUI';
 import ControlsGuide from './components/ControlsGuide';
 import GameOverModal from './components/GameOverModal';
 import { PLAYER_1_CONTROLS, PLAYER_2_CONTROLS } from './constants';
-import { AppStage } from './types';
+import { AppStage, PlayerState } from './types';
+import socketService from './utils/socketService';
+import OpponentGameView from './components/OpponentGameView';
 
 function generateUniqueLobbyId(): string {
   return Math.random().toString(36).substring(2, 8);
@@ -23,6 +25,10 @@ const App: React.FC = () => {
   const [p1PropIncomingGarbage, setP1PropIncomingGarbage] = useState(0);
   const [p2PropIncomingGarbage, setP2PropIncomingGarbage] = useState(0);
 
+  const [isHost, setIsHost] = useState<boolean>(true);
+  const [opponentGameState, setOpponentGameState] = useState<PlayerState | null>(null);
+  const [opponentConnected, setOpponentConnected] = useState<boolean>(false);
+
   useEffect(() => {
     const parseHash = () => {
       if (window.location.hash.startsWith('#game=')) {
@@ -35,6 +41,7 @@ const App: React.FC = () => {
           setPlayer1Name(decodeURIComponent(p1NameFromHash));
           setAppStage('INIT_PLAYER2_NAME_JOIN'); 
           setCurrentStageKey(Date.now());
+          setIsHost(false);
         }
       }
     };
@@ -119,13 +126,22 @@ const App: React.FC = () => {
       window.location.hash = `game=${newLobbyId}&p1=${encodeURIComponent(newP1Name)}`;
       
       setAppStage('LOBBY_AWAITING_PLAYER2');
+      
+      if (newLobbyId) {
+        setIsHost(true);
+        socketService.connect(newLobbyId, newP1Name, true);
+      }
     }
   };
 
   const handleP2NameSubmit = (name: string) => {
     if (name.trim() && player1Name && lobbyId) { 
-      setPlayer2Name(name.trim());
+      const newP2Name = name.trim();
+      setPlayer2Name(newP2Name);
       setAppStage('READY_TO_START'); 
+      
+      socketService.connect(lobbyId, newP2Name, false);
+      socketService.sendPlayerReady();
     }
   };
   
@@ -137,7 +153,11 @@ const App: React.FC = () => {
     player1Logic.resetPlayerState(); 
     player2Logic.resetPlayerState(); 
     
-    setAppStage('PLAYING'); 
+    setAppStage('PLAYING');
+    
+    if (isHost) {
+      socketService.sendPlayerReady();
+    }
   };
   
   const restartGame = () => {
@@ -148,6 +168,10 @@ const App: React.FC = () => {
     
     setP1PropIncomingGarbage(0);
     setP2PropIncomingGarbage(0);
+    
+    socketService.disconnect();
+    setOpponentGameState(null);
+    setOpponentConnected(false);
 
     player1Logic.resetPlayerState(); 
     player2Logic.resetPlayerState();
@@ -227,6 +251,64 @@ const App: React.FC = () => {
   const secondaryButtonClass = `${commonButtonClass} bg-green-600 hover:bg-green-700 text-white focus:ring-green-500`;
   const tertiaryButtonClass = `${commonButtonClass} bg-slate-500 hover:bg-slate-600 text-white focus:ring-slate-400`;
   const inputClass = "w-full p-2.5 rounded-md border placeholder-slate-400 text-sm minimal-input";
+
+  useEffect(() => {
+    socketService.onOpponentGameStateUpdate((gameState) => {
+      setOpponentGameState(gameState);
+      if (!opponentConnected) {
+        setOpponentConnected(true);
+      }
+    });
+    
+    socketService.onOpponentReady(() => {
+      if (appStage === 'LOBBY_AWAITING_PLAYER2') {
+        setAppStage('READY_TO_START');
+      } else if (appStage === 'READY_TO_START') {
+        triggerActualGameStart();
+      }
+    });
+    
+    return () => {
+      // Очистка
+    };
+  }, [appStage, opponentConnected]);
+  
+  useEffect(() => {
+    if (appStage === 'PLAYING') {
+      const playerState = isHost 
+        ? player1Logic.playerState 
+        : player2Logic.playerState;
+      
+      socketService.sendGameState(playerState);
+    }
+  }, [isHost, player1Logic.playerState, player2Logic.playerState, appStage]);
+
+  const renderGameUI = () => {
+    const currentPlayerState = isHost ? player1Logic.playerState : player2Logic.playerState;
+    const currentPlayerName = isHost ? player1Name : player2Name;
+    const opponentPlayerName = isHost ? player2Name : player1Name;
+    
+    return (
+      <div className="flex flex-col lg:flex-row justify-center items-center lg:items-start gap-4 lg:gap-6">
+        <div className="flex flex-col items-center">
+          <PlayerUI 
+            playerLabel={`${currentPlayerName || "Вы"}`} 
+            playerState={currentPlayerState} 
+            playerColorClass="text-blue-600" 
+          />
+        </div>
+        
+        {opponentGameState && (
+          <div className="flex flex-col items-center">
+            <OpponentGameView 
+              playerState={opponentGameState} 
+              playerName={opponentPlayerName || "Оппонент"}
+            />
+          </div>
+        )}
+      </div>
+    );
+  };
 
   const renderContent = () => {
     let content;
@@ -325,10 +407,7 @@ const App: React.FC = () => {
       case 'GAME_OVER_STATE': 
         content = (
           <>
-            <div className="flex flex-col lg:flex-row justify-center items-center lg:items-start gap-4 lg:gap-6">
-              <PlayerUI playerLabel={player1Name || "Player 1"} playerState={player1Logic.playerState} playerColorClass="text-blue-600" />
-              <PlayerUI playerLabel={player2Name || "Player 2"} playerState={player2Logic.playerState} playerColorClass="text-green-600" />
-            </div>
+            {renderGameUI()}
             {appStage === 'PLAYING' && <div className="mt-4 w-full max-w-4xl px-2"><ControlsGuide /></div>}
             <GameOverModal 
                 winnerOPlayerName={winnerName}
