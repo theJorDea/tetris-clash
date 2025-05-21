@@ -1,0 +1,5 @@
+{
+  "name": "Competitive Tetris Clash",
+  "description": "A two-player competitive Tetris game where clearing lines sends garbage to your opponent. Features classic Tetris gameplay with a competitive twist, built with React, TypeScript, and Tailwind CSS.",
+  "requestFramePermissions": []
+}
